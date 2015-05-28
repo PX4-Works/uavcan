@@ -42,6 +42,7 @@ protected:
      */
     virtual int16_t getInfo(const Path& path, uint64_t& out_crc64, uint32_t& out_size, EntryType& out_type)
     {
+        PROBE(4,true);
         int rv = uavcan::protocol::file::Error::INVALID_VALUE;
         FileCRC crc;
         if (path.size() > 0)
@@ -96,6 +97,7 @@ protected:
                 close(fd);
             }
         }
+        PROBE(4,false);
         return rv;
     }
 
@@ -109,6 +111,7 @@ protected:
 
     virtual int16_t read(const Path& path, const uint32_t offset, uint8_t* out_buffer, uint16_t& inout_size)
     {
+        PROBE(5,true);
         int rv = uavcan::protocol::file::Error::INVALID_VALUE;
 
         if (path.size() > 0)
@@ -144,6 +147,7 @@ protected:
                 (void)close(fd);
             }
         }
+        PROBE(5,false);
         return rv;
     }
 
