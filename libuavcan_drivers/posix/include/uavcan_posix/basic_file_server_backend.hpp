@@ -42,7 +42,7 @@ protected:
      */
     virtual int16_t getInfo(const Path& path, uint64_t& out_crc64, uint32_t& out_size, EntryType& out_type)
     {
-        PROBE(4,true);
+        PROBE(4, true);
         int rv = uavcan::protocol::file::Error::INVALID_VALUE;
         FileCRC crc;
         if (path.size() > 0)
@@ -54,7 +54,9 @@ protected:
             rv = -ENOENT;
             uint8_t buffer[512];
 
+            PROBE_MARK(4);
             int fd = ::open(path.c_str(), O_RDONLY);
+            PROBE_MARK(4);
 
             if (fd >= 0)
             {
@@ -63,7 +65,9 @@ protected:
                 do
                 {
 
+                    PROBE_MARK(4);
                     len = ::read(fd, buffer, sizeof(buffer));
+                    PROBE_MARK(4);
 
                     if (len > 0)
                     {
@@ -94,10 +98,12 @@ protected:
 
                 rv = 0;
             out_close:
+                PROBE_MARK(4);
                 close(fd);
+                PROBE_MARK(4);
             }
         }
-        PROBE(4,false);
+        PROBE(4, false);
         return rv;
     }
 
@@ -109,14 +115,44 @@ protected:
      * On success the method must return zero.
      */
 
+    Path last_path;
+    int last_fd;
     virtual int16_t read(const Path& path, const uint32_t offset, uint8_t* out_buffer, uint16_t& inout_size)
     {
-        PROBE(5,true);
+        PROBE(5, true);
         int rv = uavcan::protocol::file::Error::INVALID_VALUE;
 
         if (path.size() > 0)
         {
-            int fd = open(path.c_str(), O_RDONLY);
+            int fd = -1;
+
+            if (last_fd != -1 &&
+                last_path.size() != 0 &&
+                0 == strcmp(path.c_str(), last_path.c_str()))
+            {
+
+                fd = last_fd;
+
+            }
+            else
+            {
+
+                if (last_fd != -1)
+                {
+                    (void)close(last_fd);
+                    last_fd = -1;
+                }
+
+                last_path = path;
+                PROBE(4, true);
+                fd = open(path.c_str(), O_RDONLY);
+                PROBE(4, false);
+                if (fd >= 0)
+                {
+                    last_fd = fd;
+                }
+                PROBE(4, false);
+            }
 
             if (fd < 0)
             {
@@ -124,14 +160,20 @@ protected:
             }
             else
             {
-                if (::lseek(fd, offset, SEEK_SET) < 0)
+                PROBE(4, true);
+                rv = ::lseek(fd, offset, SEEK_SET);
+                PROBE(4, false);
+
+                if (rv < 0)
                 {
                     rv = errno;
                 }
                 else
                 {
                     // TODO use a read at offset to fill on EAGAIN
+                    PROBE(4, true);
                     ssize_t len = ::read(fd, out_buffer, inout_size);
+                    PROBE(4, false);
 
                     if (len < 0)
                     {
@@ -144,13 +186,25 @@ protected:
                         rv = 0;
                     }
                 }
-                (void)close(fd);
+                if (rv == 0 && inout_size == 0)
+                {
+                  PROBE(4, true);
+                  (void)close(fd);
+                  last_path.clear();
+                  last_fd = -1;
+                  PROBE(4, false);
+                }
             }
         }
-        PROBE(5,false);
+        PROBE(5, false);
+        PROBE(4, false);
         return rv;
     }
 
+public:
+    BasicFileSeverBackend() :
+        last_fd(-1)
+    { }
 };
 
 }
