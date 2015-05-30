@@ -50,7 +50,7 @@ protected:
             return ::open(path, oflags);
         }
 
-        virtual int close(int fd)
+        virtual int close(int fd, bool done = true)
         {
             using namespace std;
 
@@ -63,11 +63,13 @@ protected:
 
     class FDCache : public FDCacheBase {
 
+        enum { MaxAgeSeconds = 3 };
+
         class FDCacheItem {
 
             friend FDCache;
             FDCacheItem *next_;
-            int refcnt_;
+            time_t last_access_;
             int fd_;
             int oflags_;
             const char *path_;
@@ -78,7 +80,7 @@ protected:
 
             FDCacheItem() :
                 next_(0),
-                refcnt_(0),
+                last_access_(0),
                 fd_(InvalidFD),
                 oflags_(0),
                 path_(0)
@@ -86,7 +88,7 @@ protected:
 
             FDCacheItem(int fd, const char * path, int oflags) :
                 next_(0),
-                refcnt_(0),
+                last_access_(0),
                 fd_(fd),
                 oflags_(oflags),
                 path_(strdup(path))
@@ -112,21 +114,25 @@ protected:
                 return fd_;
             }
 
-            inline int getRefCount()
+            inline time_t getAccess()
             {
-                return refcnt_;
+                return last_access_;
             }
 
-            int addRef()
+            time_t acessed()
             {
-                refcnt_++;
-                return getRefCount();
+                last_access_ = time(0);
+                return getAccess();
             }
 
-            int removeRef()
+            void expire()
             {
-                refcnt_--;
-                return getRefCount();
+                last_access_ = 0;
+            }
+
+            bool expired()
+            {
+                return 0 == last_access_ || (time(0) - last_access_) > MaxAgeSeconds;
             }
 
             int compare(const char * path, int oflags)
@@ -145,22 +151,26 @@ protected:
 
         FDCacheItem* find(const char *path, int oflags)
         {
-            FDCacheItem* pi = head_;
-            while(pi && 0 != pi->compare(path, oflags))
+            for(FDCacheItem* pi = head_; pi; pi = pi->next_)
             {
-                pi = pi->next_;
+                if (0 == pi->compare(path, oflags))
+                {
+                    return pi;
+                }
             }
-            return pi;
+            return 0;
         }
 
         FDCacheItem* find(int fd)
         {
-            FDCacheItem* pi = head_;
-            while(pi && 0 != pi->compare(fd))
+            for(FDCacheItem* pi = head_; pi; pi = pi->next_)
             {
-                pi = pi->next_;
+                if(0 == pi->compare(fd))
+                {
+                    return pi;
+                }
             }
-            return pi;
+            return 0;
         }
 
 
@@ -168,34 +178,47 @@ protected:
         {
             pi->next_ = head_;
             head_ = pi;
-            pi->addRef();
+            pi->acessed();
             return pi;
         }
 
-        FDCacheItem* remove(FDCacheItem* pi)
+        void removeExpired(FDCacheItem** pi)
         {
-            if (pi->removeRef() > 0 )
+            while (*pi)
             {
-                pi = 0;
-            }
-            else
-            {
-
-                FDCacheItem** li = &head_;
-                FDCacheItem* i = head_;
-                while(i)
+                if ((*pi)->expired())
                 {
-                    if (i == pi)
-                    {
-                        *li = pi->next_;
-                        break;
-                    }
-                    li = &(i->next_);
-                    i = i->next_;
+                    FDCacheItem* next = (*pi)->next_;
+                    (void)FDCacheBase::close((*pi)->fd_);
+                    delete(*pi);
+                    *pi = next;
+                    continue;
                 }
+                pi = &(*pi)->next_;
             }
-            return pi;
         }
+
+        void remove(FDCacheItem* pi, bool done)
+        {
+            if (done)
+            {
+                pi->expire();
+            }
+            removeExpired(&head_);
+        }
+
+
+        void clear()
+        {
+            FDCacheItem* tmp;
+            for(FDCacheItem* pi = head_; pi; pi = tmp)
+            {
+                tmp = pi->next_;
+                (void)FDCacheBase::close(pi->fd_);
+                delete pi;
+            }
+        }
+
 
     public:
 
@@ -205,14 +228,7 @@ protected:
 
         virtual ~FDCache()
         {
-            for(FDCacheItem* pi = head_; pi; )
-            {
-                FDCacheItem* tmp = pi->next_;
-                (void)FDCacheBase::close(pi->fd_);
-                delete pi;
-                pi = tmp;
-
-            }
+            clear();
         }
 
         virtual int open(const char *path, int oflags)
@@ -223,7 +239,7 @@ protected:
 
             if (pi != 0)
             {
-                pi->addRef();
+                pi->acessed();
             }
             else
             {
@@ -264,7 +280,7 @@ protected:
         }
 
 
-        virtual int close(int fd)
+        virtual int close(int fd, bool done)
         {
             FDCacheItem *pi = find(fd);
             if (pi == 0)
@@ -275,12 +291,7 @@ protected:
 
                 return FDCacheBase::close(fd);
             }
-            pi = remove(pi);
-            if (pi)
-            {
-                delete pi;
-                return FDCacheBase::close(fd);
-            }
+            remove(pi, done);
             return 0;
         }
 
@@ -430,13 +441,9 @@ protected:
                     }
                 }
 
-                if (rv != 0 || len != inout_size)
-                {
-                    PROBE(4, true);
-                    (void)cache.close(fd);
-                    PROBE(4, false);
-                }
-
+                PROBE(4, true);
+                (void)cache.close(fd, rv != 0 || len != inout_size);
+                PROBE(4, false);
                 inout_size = len;
             }
         }
